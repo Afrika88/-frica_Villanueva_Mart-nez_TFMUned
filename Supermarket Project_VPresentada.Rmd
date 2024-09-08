@@ -1,0 +1,861 @@
+---
+title: "TFM"
+author: "África Villanueva"
+date: "2024-09-15"
+output:
+  html_document:
+    fontsize: 9pt
+    toc: true
+    toc_float: true
+    toc_depth: 2
+  pdf_document:
+    fontsize: 9pt
+    toc: true
+    toc_depth: '2'
+  word_document:
+    toc: true
+    toc_depth: '2'
+---
+```{r librerías,echo=FALSE}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(data.table)
+  library(tidyr)
+  library(magrittr)
+  library(ggplot2)
+  library(forcats)
+  library(kableExtra)
+  library(lubridate)
+  library(ggplot2)
+  library(tibble)
+  library(cluster)
+  library(factoextra)
+  library(caret)
+  library(randomForest)
+  library(caret)
+  library(ipred)
+  library(dbscan)
+})
+```
+
+
+
+# Introducción
+
+Mi BBDD elegida es una base de datos de la plataforma Kaggle:
+https://www.kaggle.com/datasets/aungpyaeap/supermarket-sales
+
+La he elegido para plantear un caso Real de una empresa que estuviera interesada en implantar un seguimiento del comportamiento de sus clientes. Que pueda estudiar y anticipar el comportamiento de las ventas, entender como y qué afecta al resultado de sus beneficios empresariales.
+
+Para ello, primero importaremos la BBDD que sería la facilitada por nuestro cliente,es un simple registro de las compras de tres de los supermercados o filiales que tienen bajo la marca.
+
+```{r importar csv,echo=FALSE}
+supermarket_sales <- read.csv("C:/Users/afrik/OneDrive/Escritorio/Master Big Data/TFM/supermarket_sales.csv")
+View(supermarket_sales)
+```
+# Exploración y transformación
+
+En esta primera fase analizamos qué datos tenemos y de qué manera se han ido registrando los mismos, esta fase nos va a ayudar a conocer el planteamiento que han usado para la creación de su BBDD, qué ejes de mejora se pueden aplicar y trabajar con las transformaciones que sean oportunas para llegar a conclusiones que nos ayuden a entender y a plantear un modelo predictivo útil para el cliente.
+
+### Análisis de datos
+
+Tenemos 9 variables cualitativas que nos indican las características de la compra, y el resto de origen cuantitativo. 
+
+Pasamos a estudiarlas al detalle.
+
+Invoice.ID: Simplemente es un código asociado a la transacción.
+
+Branch: Marca que corresponde a uno de los tres supermercados.
+
+City: De igual modo que la Marca nos dice donde se ha producido esa transacción.
+
+Customer.type: Variable categórica que indica si el cliente es Miembro o no.
+
+Gender: Género del cliente.
+
+Product.line: Indica en que línea de producto se ha producido la transacción.
+
+Unit.price: Precio unitario de la transacción.
+
+Quantity: Cantidad de productos en una misma transacción.
+
+Tax.5: Tasa del 5% sobre el importe.
+
+Total: Importe de la transacción incluyendo las tasas.
+
+Date: Fecha en la que se produce la transacción.
+
+Time: Hora en la que se produce la transacción.
+
+Payment: Categoriza de qué modo se ha llevado a cabo el pago.
+
+cogs: Gastos en los que se incurre por llevar a cabo la venta.
+
+gross.margin.percentage: Es un porcentual que indica el margen; que como vemos es una constante.
+
+gross.income: El porcentual anterior sobre el importe de la transacción, el montante.
+
+Rating: Puntuación del cliente entre 1 y 10.
+
+Las variables del modelo han sido tratadas como se verá en los anexos consiguiendo una Base de Datos que nos permite llegar a analizar y cuantificar las conclusiones que esperamos. (Anexos)
+
+
+```{r conversión de las variables categóricas, echo=FALSE}
+supermarket_sales$Branch <- as.factor(supermarket_sales$Branch)
+supermarket_sales$City <- as.factor(supermarket_sales$City)
+supermarket_sales$Customer.type <- as.factor(supermarket_sales$Customer.type)
+supermarket_sales$Gender <- as.factor(supermarket_sales$Gender)
+supermarket_sales$Product.line <- as.factor(supermarket_sales$Product.line)
+supermarket_sales$Payment <- as.factor(supermarket_sales$Payment)
+```
+
+
+```{r Conversión de las fechas y de los campos hora,echo=FALSE}
+supermarket_sales$Date <-mdy(supermarket_sales$Date)
+supermarket_sales$Month <- month(supermarket_sales$Date)
+supermarket_sales$Year <- year(supermarket_sales$Date)
+```
+
+```{r, echo=FALSE}
+#Voy a dividir la información de las fechas para más adelante
+supermarket_sales$DayOfWeek <- weekdays(supermarket_sales$Date)
+```
+
+
+```{r Conversión horas,echo=FALSE}
+#Como antes voy a dividir la información
+supermarket_sales$Hour <- substr(supermarket_sales$Time, 1,2)
+```
+
+
+Una vez hemos tratado las variables para un mejor estudio vamos a empezar analizando nuestra distribución.
+
+```{r Distribución ventas, echo=FALSE}
+ggplot(supermarket_sales, aes(x = Total)) + geom_histogram(binwidth = 50, fill ="blue", color = "black") +theme_minimal() +
+labs(title = "Distribución Ventas")
+
+```
+
+
+    La mayoría de ventas están concentradas en el rango de 100 a 200, la distrib está sesgada a la derecha por lo que hay ventas más altas que no son tan frecuentes(outliers).Debemos plantearnos para nuestro estudio en un primer paso no considerar aquellas transaccones que no son de comportamiento general,para que no afecte el las conclusiones finales.
+
+Para llevar a cabo esta discriminación, observamos que ventas por línea de producto estarían fuera de lo normal, lo hacemos de este modo porque entendemos que cada línea de producto tiene sus rangos de ventas y su casuística.
+```{r, echo=FALSE}
+#Boxplot por tipo de línea producto
+ggplot(supermarket_sales, aes(x = Product.line, y =Total))+
+  geom_boxplot(fill = "green")+
+  theme_minimal()+
+  labs(title = "Total ventas por línea de producto")
+```
+     Las medianas de las variables son bastante uniformes en la línea de productos 250-300, las cajas también vemos que están colocadas a  
+     alturas similares lo que nos indica que en la mayor parte están igualmente distribuidas. Sin embargo, hay categorías como se puede 
+     observar con outliers. Electronics, Home & Lifestile serían las más homogéneas el resto podrían ser excepciones o errores.
+
+```{r  Identificar Outliers,echo=FALSE}
+outliers <- supermarket_sales %>%
+  group_by (Product.line) %>%
+  summarise(
+    Q1 = quantile(Total, 0.25),
+    Q3 = quantile(Total, 0.75)
+  ) %>%
+  mutate(
+    IQR = Q3 - Q1,
+    Lower_Limit = Q1 - 1.5 * IQR,
+    Upper_Limit = Q3 + 1.5 * IQR
+  )
+
+#Unir los outliers con mi base para verlos
+
+supermarket_sales_outliers <- supermarket_sales %>%
+  inner_join(outliers, by ="Product.line") %>%
+  filter(Total < Lower_Limit | Total > Upper_Limit)
+```
+
+
+```{r limpiar mi dataset, echo=FALSE}
+supermarket_sales_clean <- supermarket_sales %>%
+  inner_join(outliers, by ="Product.line") %>%
+  filter(Total >= Lower_Limit & Total <= Upper_Limit)
+#Verifico que me haya quitado los 9 outliers
+```
+
+```{r Reemplazar mi dataset por el dataset limpio, echo=FALSE}
+supermarket_sales <- supermarket_sales_clean[ ,1:21]
+supermarket_sales <- supermarket_sales %>%
+  mutate(Hour = as.numeric(Hour))
+```
+
+```{r Histograma de la variable a predecir Total,echo=FALSE}
+
+hist(supermarket_sales$Total, main="Histograma de Ventas", xlab="Total", col="blue")
+
+```
+
+Hemos ajustado nuestra distribución desechando esas transacciones que no serían significativas del comportamiento general
+
+
+```{r Shapiro Test, echo=FALSE}
+shapiro_test <- shapiro.test(supermarket_sales$Total)
+print(shapiro_test)
+```
+No es una distribución normal perfecta y p es menor a 0,05 rechazamos la hipótesis nula de que la distribución sea normal.(Anexos)
+
+
+A continuación, analizamos la relación entre las variables con la Matriz de correlación
+
+```{r,echo=FALSE}
+#Mis variables numéricas
+var_num <- supermarket_sales [,sapply(supermarket_sales, is.numeric)]
+var_num_singm <- var_num[, !(names(var_num) %in% c("gross.margin.percentage","Year"))]
+matriz_correlación <- cor(var_num_singm)
+```
+Lo que más me llama la atención es la poca correlación de Rating con el resto de las variables, parece que no es significativo nada para la puntuación. La evidencia de la relación entre las otras variables entre sí tiene sentido, pero me preocupa que no pueda evaluar la satisfacción del cliente con los datos.
+
+```{r Mapa de calor de la Matriz,echo=FALSE}
+
+
+data <- matrix(c(
+  1.000000000, -0.009650983, 0.62392841, 0.62392841, 0.62392841, 0.62392841, -0.009053787,
+  -0.009650983, 1.000000000, 0.69988478, 0.69988478, 0.69988478, 0.69988478, -0.015864722,
+  0.62392841, 0.69988478, 1.00000000, 1.00000000, 1.00000000, 1.00000000, -0.037809572,
+  0.62392841, 0.69988478, 1.00000000, 1.00000000, 1.00000000, 1.00000000, -0.037809572,
+  0.62392841, 0.69988478, 1.00000000, 1.00000000, 1.00000000, 1.00000000, -0.037809572,
+  0.62392841, 0.69988478, 1.00000000, 1.00000000, 1.00000000, 1.00000000, -0.037809572,
+  -0.009053787, -0.015864722, -0.037809572, -0.037809572, -0.037809572, -0.037809572, 1.000000000
+), nrow=7, byrow=TRUE)
+
+colnames(data) <- rownames(data) <- c("Unit.price", "Quantity", "Tax.5", "Total", "cogs", "gross.income", "Rating")
+
+data_calor <- as.data.frame(data) %>%
+  rownames_to_column(var ="Var1") %>%
+  pivot_longer(cols = -Var1, names_to ="Var2", values_to ="value")
+
+# Gráfico
+ggplot(data_calor, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low ="blue", high ="red", mid ="white", midpoint = 0, limit = c(-1,1), space = "Lab", name= "Correlación") +
+  theme_minimal() +
+  labs(title ="Mapa de Calor: Matriz de Correlación", x="", y="") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust= 1))
+
+```
+```{r, echo=FALSE}
+# Diagrama de dispersión + Histogramas marginales + coeficiente de correlación de pearson
+psych::scatterHist(log(supermarket_sales$Total),supermarket_sales$Unit.price)
+```
+
+    El log de total vemos que tienen una distribución normal, mientras que el de precio vemos que es una distribución más asimétrica.  Adicionalmente con el coeficiente de correlación observamos una correlación positiva, pero en este caso moderada. Para una  evaluación posterior acerca del modelo podemos ver que al ser representada la relación de manera curva probablemente nuestro modelo sea no lineal, aunque no tomaremos por el momento esa decisión en este punto. 
+
+
+
+# Estudio de datos
+
+En esta fase estudiaremos el comportamiento de las transacciones de la muestra.
+
+De una primera exploración podemos ver que las variables categóricas están en todos los casos muy equitativas, esto nos puede suponer un problema a priori a la hora de poder sacar conclusiones.
+
+
+### Distribución de Marcas
+
+Observamos que ninguna de las filiales destaca más que otra, las ventas se distribuyen equitativamente, lo que sugiere que a la fecha todas aportan cifras similares al negocio.
+```{r Gráfico marcas, echo=FALSE}
+branch_freq <- supermarket_sales_clean %>%
+  group_by(Branch) %>%
+  summarise(Frequency = n()) %>%
+  mutate(Percentage = Frequency / sum(Frequency) *100)
+#Gráfico
+ggplot(branch_freq, aes(x= "", y = Percentage, fill= Branch))+
+ geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  labs(title = "Frecuencia de Marcas") +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5))
+
+```
+
+### Distribución de Métodos de pago
+  
+No hay ningún método de pago por el que se deba apostar más, pues todos son equitativamente utilizados.
+```{r frecuencia métodos de pago, echo=FALSE}
+payment_freq <- supermarket_sales_clean %>%
+  group_by(Payment) %>%
+  summarise(Frequency = n()) %>%
+  mutate(Percentage = Frequency / sum(Frequency) *100)
+#Gráfico
+ggplot(payment_freq, aes(x= "", y = Percentage, fill= Payment))+
+ geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  labs(title = "Frecuencia de métodos de Pago") +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5))
+```
+
+### Distribución de Métodos de Línea de productos
+    
+Ninguna línea destaca claramente en la aportación al negocio
+
+```{r porc de Línea de productos, echo=FALSE}
+product.line_freq <- supermarket_sales_clean %>%
+  group_by(Product.line) %>%
+  summarise(Frequency = n()) %>%
+  mutate(Percentage = Frequency / sum(Frequency) *100)
+#Gráfico
+ggplot(product.line_freq, aes(x= "", y = Percentage, fill= Product.line))+
+ geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  theme_void() +
+  labs(title = "Frec. Línea de producto") +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%")), 
+            position = position_stack(vjust = 0.5))
+
+
+```
+
+### Evolución y comportamiento de Ventas.
+
+Lo que veremos en este apartado es que variables podemos añadir al modelo o si por lo contrario no hay nada relevante que aporte información a nuestra predicción de ventas.
+
+
+##### ¿Es el género o ser miembro o no relevante?
+```{r Hacer un resumen de el tipo de cliente por género,echo=FALSE}
+#Agrupo mis campos
+cliente_genero <- supermarket_sales %>%
+  group_by(Gender, Customer.type) %>%
+  summarise(
+    count = n(),
+    mean_total = mean(Total),
+    .groups = "drop"
+  )
+
+#Graficarlo
+
+ggplot(cliente_genero, aes(x = Customer.type, y = count, fill = Gender)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_text(aes(label = count), vjust = -0.5, position = position_dodge(0.9)) +
+  geom_point(aes(y = mean_total), size = 3, shape = 21, fill = "white", color = "black", position = position_dodge(0.9)) +
+  geom_text(aes(y = mean_total, label = round(mean_total, 2)), vjust = -1.5, position = position_dodge(0.9)) +
+  scale_y_continuous(
+    name = "Cuenta",
+    sec.axis = sec_axis(~ . / 10, name = "Media Total")
+  ) +
+  labs(
+    title = "Cuenta y Media Total por género y tipo de cliente",
+    x = "Tipo de cliente",
+    fill = "Género"
+  ) +
+  theme_minimal()
+  
+```
+    Los datos por género están muy parejos y a nivel media parece que el género femenino se gasta un poco más de media pero tampoco hay mucha diferencia aparente.Analizamos si el que sea miembro o no está relacionado con el gasto y tampoco nos da una clara conclusión esta variable.
+    
+##### ¿Es el ser miembro o no relevante a la hora de elegir la línea de producto elegido?    
+
+```{r Hacer un resumen de el tipo de cliente por línea de producto, echo=FALSE}
+#Agrupo mis campos
+
+cliente_linea <- supermarket_sales %>%
+  group_by(Product.line, Customer.type) %>%
+  summarise(
+    count = n(),
+    mean_total = mean(Total),
+    .groups = "drop"
+  )
+
+#Graficarlo
+
+ggplot(cliente_linea, aes(x = Customer.type, y = count, fill = Product.line)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_text(aes(label = count), vjust = -0.5, position = position_dodge(0.9)) +
+  geom_point(aes(y = mean_total), size = 3, shape = 21, fill = "white", color = "black", position = position_dodge(0.9)) +
+  geom_text(aes(y = mean_total, label = round(mean_total, 2)), vjust = -1.5, position = position_dodge(0.9)) +
+  scale_y_continuous(
+    name = "Cuenta",
+    sec.axis = sec_axis(~ . / 10, name = "Media Total")
+  ) +
+  labs(
+    title = "Cuenta y Media Total por línea y tipo de cliente",
+    x = "Tipo de cliente",
+    fill = "Línea"
+  ) +
+  theme_minimal()
+   
+   
+```
+
+  
+    Los datos son muy similares en lo que se refiere al tipo de consumo así que podemos concluir que en principio no es una variable que nos de mucha información aparente, no la integraremos seguramente en nuestro modelo.
+    
+### Análisis del comportamineto del cliente
+
+##### ¿Afecta la hora de día ante el comportamiento del consumo a nivel línea de producto?    
+```{r Demanda diaria por Horas por linea de producto, echo=FALSE}
+# Agrupar los datos y resumir
+linea_hora <- supermarket_sales %>%
+  group_by(Hour, Product.line) %>%
+  summarise(num_ventas = n(), .groups = "drop")
+
+# Gráfico
+ggplot(linea_hora, aes(x = Hour, y = num_ventas, color = Product.line, group = Product.line)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Evolución de ventas por Línea a lo largo del día",
+    x = "Hora del día",
+    y = "Número de compras",
+    color = "Línea"
+  ) +
+  scale_x_continuous(breaks = 0:23) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+     
+    Lo más evidente es el pico de ventas de la tarde, cuando la gente sale de trabajar y aprovecha para hacer la compra lo que nos hace pensar que a lo mejor esto podría ser diferente según el día, si es entre semana o en fin de semana.Lo que si que observamos que no hay línea de producto que se desmarque de un comportamiento de manera muy evidente.
+
+```{r Crear Tipo de Día, echo=FALSE}
+supermarket_sales <- supermarket_sales %>%
+  mutate(Tipo_dia = if_else(DayOfWeek %in% c("sábado", "domingo"), "Fin de semana", "Entre semana"))
+
+```
+
+```{r agrupar,echo=FALSE}
+linea_hora_dia <- supermarket_sales %>%
+  group_by(Hour, Product.line, Tipo_dia) %>%
+  summarise(num_ventas = n(), .groups = 'drop')
+```
+### Análisis según la marca o ciudad
+
+##### ¿Es muy diferente el comportamiento de compra en cada una de las ciudades?    
+
+```{r Demanda, compras por hora según la Ciudad o Marca de la CIA, echo=FALSE}
+
+marca_hora <- supermarket_sales %>%
+  group_by(Hour, Branch) %>%
+  summarise(num_ventas = n(), .groups = 'drop')
+  
+
+#Gráfico
+
+ggplot(marca_hora, aes( x = Hour, y = num_ventas, color = Branch, group = Branch)) +
+  geom_line(linewidth = 1) +
+  geom_point(size =2) +
+  labs(
+    title = "Evolución de ventas por Marca a lo largo del dia",
+    x = "Hora del día",
+    y = "Número de compras",
+    color = "Marca"
+  ) +
+  scale_x_continuous(breaks = 0:23) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+ Podemos observar que una de las marcas, la B, Mandalay tiene picos más diferenciados y horas mucho más fueres (19-20), muestra caídas de vistitas más fuertes entre las (16-17). La A y la C son más similares aunque también cada una tiene sus peculiaridades.En la C, los horas con más demanda serían la primera y la penúltima hora, sin embargo no se desmarcan demasiado del resto del día.
+
+```{r Fin de semana, echo=FALSE}
+
+marca_hora_dia <- supermarket_sales %>%
+  group_by(Hour, Branch, Tipo_dia) %>%
+  summarise(num_ventas = n(), .groups = 'drop')
+
+ggplot(marca_hora_dia %>% filter(Tipo_dia == "Fin de semana"), aes(x= Hour, y= num_ventas, color = Branch, group = Branch))+
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Numero de ventas por marca en Fin de semana ",
+    x = "Hora del día",
+    y =" Número de Ventas",
+    color ="Marca"
+  ) + 
+  scale_x_continuous(breaks = 0:23) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle =45,hjust =1)
+  )
+
+```
+
+    Podemos observar como hay un cambio claro de comportamiento en los fines de semana  los cambios más extremos en el día los representan Yangon y Mandalay,Naypyitaw exceptuando la hora de las 11 más o menos hay un flujo similar a lo largo del día. Podría ser interesante si quisiéramos valorar el cierre de la tienda para descansos y ahorrar en costes.
+
+Por último a nivel Total vamos a concluir que días son los más y menos fuertes de ventas 
+
+```{r, echo=FALSE}
+#Agrupo mis campos
+
+total_Dia <- supermarket_sales %>%
+  group_by(DayOfWeek) %>%
+  summarise(Total_Sum =sum(Total))
+
+#Ordeno el gráfico por día
+
+total_Dia$DayOfWeek <- factor(total_Dia$DayOfWeek, levels = c ("lunes","martes","miércoles", "jueves","viernes","sábado","domingo"))
+
+#Graficarlo
+
+ggplot(total_Dia, aes(x = DayOfWeek, y = Total_Sum, fill = DayOfWeek)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(Total_Sum, 2)), vjust = -0.5, size =3.5) +
+  labs(
+    title = "Total ventas por días de la Semana",
+    x = "Día de la semana",
+    y = "Ventas"
+  ) +
+  theme_minimal() +
+  theme(
+  legend.position = "none",
+  axis.text.x = element_text(angle = 45, hjust = 1) )
+   
+```
+
+      El día con más venta sería el sábado, seguido por el martes. Si nos pidieran tomar una decisión acerca de elgir un día de descanso deberíamos proponer el Lunes como día de cierre.
+
+
+```{r, echo=FALSE}
+#Agrupo mis campos
+
+mes_marca <- supermarket_sales %>%
+  group_by(Branch, Month) %>%
+  summarise(
+    count = n(),
+    mean_total = mean(Total),
+    .groups = 'drop'
+  )
+
+#Graficarlo
+
+ggplot(mes_marca, aes(x = Month, y = count, fill = Branch)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_text(aes(label = count), vjust = -0.5, position = position_dodge(0.9)) +
+  geom_point(aes(y = mean_total), size = 3, shape = 21, fill = "white", color = "black", position = position_dodge(0.9)) +
+  geom_text(aes(y = mean_total, label = round(mean_total, 2)), vjust = -1.5, position = position_dodge(0.9)) +
+  scale_y_continuous(
+    name = "Cuenta",
+    sec.axis = sec_axis(~ . / 10, name = "Media Total")
+  ) +
+  labs(
+    title = "Cuenta y Media Total por marca y mes",
+    x = "Mes",
+    fill = "Marca"
+  ) +
+  theme_minimal()
+```
+         
+  
+    En niveles generales vemos que de media no se está generando venta de un mes a otro, no hay una buena evolución. Hay que entender a que se debe, por ello nos vamos a centrar en crear un modelo que prevea la variable Total.
+
+# Modelo de predicción
+
+## Predicción de Total
+
+Después del análisis de nuestra BBDD empezamos a evaluar diferentes opciones de modelaje para nuestro modelo de predicción.
+Primero estudiamos una posible división de los datos por clusters.
+
+```{r Campos objeto de Cluster,echo=FALSE}
+data_cluster <- supermarket_sales %>%
+  select(Branch, City, Customer.type, Gender, Product.line, Unit.price, Quantity, Tax.5., Total, Payment, cogs, Rating, Month, DayOfWeek, Hour)
+
+data_cluster <- model.matrix(~ . -1, data =data_cluster)
+data_cluster <- scale(data_cluster) 
+
+#K-means
+
+set.seed(123)
+
+wss <- (nrow(data_cluster) -1) * sum(apply(data_cluster, 2, var))
+for (i in 2:15) {
+  wss[i] <- sum(kmeans(data_cluster, centers = i)$tot.withinss)
+}
+plot(1:15, wss, type ="b", pch = 19, frame =FALSE,
+     xlab= "Número de Clusters",
+     ylab = "Suma de cuadrados dentro del cluster(WSS)")
+```
+
+  
+    El gráfico tiene el codo entre el tres y el cuarto voy a analizar y elegir cual sería mi número óptimo de clusters porque también vemos que la gráfica se empieza a aplanar a partir del 8.
+```{r, echo=FALSE}
+kmeans_resultado <- kmeans(data_cluster, centers = 3, nstart = 25)
+supermarket_sales$cluster <- kmeans_resultado$cluster
+```
+
+### Evaluación gráfica de los cluster antes de seguir
+```{r PCA,echo=FALSE}
+pca_resultado <- prcomp(data_cluster, center = TRUE, scale. = TRUE)
+
+pca_data <- data.frame(pca_resultado$x[,1:2])
+pca_data$cluster <- as.factor(supermarket_sales$cluster)
+
+#Gráfico
+
+ggplot(pca_data, aes(x= PC1, y = PC2, color =cluster)) +
+  geom_point(alpha =0.7) +
+  labs(title = "Cluster PCA",
+       x = "C1",
+       y = "C2",
+       color = "Cluster") +
+  theme_minimal()
+
+
+```
+
+    Un cluster de 3 está claramente diferenciado, pero vamos a observar si nos aporta algo novedoso o solo se trata de la partición de marcas y ciudades que ya tenemos
+
+```{r Gráfico de silueta, echo=FALSE}
+
+sil <- silhouette(kmeans_resultado$cluster, dist(data_cluster))
+
+#Grf
+
+fviz_silhouette(sil) +
+  labs(title = "Grafico de Siluetas para Clusters")
+
+```
+
+    Como vemos graficamente los gráficos indican que esta partición no me supone un buen método, hemos probado con diferentes números de cluster y las conclusiones son similares por lo que no voy a usar esta técnica.
+
+No podemos usar la técnica de cluster para esta muestra.(Anexos)
+
+
+### Punto clave de la elección del modelo de predicción
+
+Después de todos estos análisis previos con la información que manejamos a la fecha nos interesa predecir principalmente dos de nuestras variables, la variable Total, para futuros análisis y toma de decisiones en función de la facturación del negocio. Y por otro lado nos interesa mucho la variable Rating, una variable de Satisfacción que nos puede guiar a estudiar el comportamiento del cliente y así poder hacer planes de Marketing, estrategias de venta para incentivar la misma...
+
+A continuación, comenzamos a analizar estos dos modelos de predicción propuestos:
+```{r Modelo predicción Total, echo=FALSE}
+
+variables_modelo <- c("Quantity","Unit.price")
+
+datos_modelo <- supermarket_sales %>%
+  select(all_of(variables_modelo), Total)
+
+#Entrenamiento y prueba
+set.seed(123)
+trainIndex <- createDataPartition(datos_modelo$Total, p = 0.8, list = FALSE)
+trainSales <- datos_modelo[trainIndex, ]
+testSales <- datos_modelo[-trainIndex, ]
+```
+
+```{r Ajustar el modelo a una regresión lineal,echo=FALSE}
+lm_model <- lm(Total ~ ., data = trainSales)
+```
+
+```{r Ajustar modelo de Random Forest, echo=FALSE}
+
+rf_model <- randomForest(Total ~., data = trainSales, importance = TRUE, ntree = 100)
+print(importance(rf_model))
+
+```
+
+```{r Evaluación del modelo, echo=FALSE}
+lm_predictions <- predict(lm_model, newdata = testSales)
+lm_rmse <- sqrt(mean((testSales$Total - lm_predictions)^2))
+print(paste("R. regresión lineal:", lm_rmse))
+
+rf_predictions <- predict(rf_model, newdata = testSales)
+rf_rmse <- sqrt(mean((testSales$Total - rf_predictions)^2))
+print(paste("R. Random Forest:", rf_rmse))
+
+```
+
+```{r Probar más modelos de Regresión KNN, echo=FALSE}
+trainSales <- trainSales[, c("Unit.price", "Quantity", "Total")]
+testSales <- testSales[, c("Unit.price", "Quantity", "Total")]
+
+#Entrenamiento
+
+train_control <- trainControl(method ="cv", number =10)
+
+set.seed(123)
+
+knn_model <- train(Total ~ ., data = trainSales, method = "knn", trControl = train_control, preProcess = c("center", "scale"), tuneLenght = 10)
+
+#Mostrar mejor número de vecinos k
+
+print(knn_model$bestTune)
+
+knn_prediccion <- predict(knn_model, newdata =testSales)
+
+#RMSE
+
+knn_rmse <- sqrt(mean((testSales$Total - knn_prediccion)^2))
+
+print(paste("RMSE DE KNN:", knn_rmse))
+
+```
+Después de varias pruebas con diferentes métodos (Anexos) nos decidimos en base a los resultados obtenidos por el modelo KNN. Mas detalle en (Anexos)
+```{r, echo=FALSE}
+plot(testSales$Total, knn_prediccion, xlab = "Valores Reales", ylab = "Predicciones", main = "Predicciones vs. Valores Reales")
+abline(0, 1, col = "red")
+```
+                      
+    Graficamente se ajusta, parece ser un buen modelo, las variables elegidas definen practicamente la variable Total,pero como hemos comentado
+    antes tendríamos que enriquecer más esta base de datos proponerle al cliente agregar campos o simplemente seguir recogiendo información para tener una muestra más extensa, ya que a la fecha como hemos comentado solo tenemos una muestra de un trimestre
+
+### Conclusiones de los diferentes modelos
+
+Regresión lineal: 
+Los errores estándar de los coeficientes son bajos, indicando la precisión de las estimaciones. Valor de p menor de 0,05. R2, indican que el modelo explica aproximadamente el 88.65%, sin embargo en RMSE es alto.
+
+Random Forest:
+El modelo Random Forest reduce significativamente el RMSE en comparación con el de regresión lineal, así que podría ser mejor opción para predecir Total.
+
+KNN:
+Muestra que el mejor número de vecinos es 5 y el RMSE es el más bajo 6.36. Es por ello que utilizaremos este modelo de predicción
+
+(Anexos) Todo el detalle de los diferentes modelos que se han valorado.
+```{r Guardar mi modelo,echo=FALSE}
+saveRDS(knn_model,"knn_model_total.rds")
+```
+
+```{r, echo=FALSE}
+#Cargar el modelo
+
+loaded_knn_model <- readRDS("knn_model_total.rds")
+```
+
+```{r Predicción de Muestra}
+datos_nuevos <- data.frame(
+  Unit.price = c(50,60,70),
+  Quantity = c(5,10,15)
+)
+
+#Predicciones 
+predicciones <- predict(loaded_knn_model, newdata = datos_nuevos)
+
+print(predicciones)
+```
+Estas serían mis predicciones para los datos, muy útil si nuestra cliente  tiene un objetivo de venta. Sin embargo, como hemos comentado antes intentaremos predecir también la variable Satisfacción del cliente.
+
+## Modelo de predicción de Satisfacción cliente.
+
+Primero debemos convertir algunas de las variables categóricas que tenemos para poder trabajar con ellas y sacar la mayor parte de la información.
+
+```{r Prediciión de Rating con variable binaria, echo=FALSE}
+supermarket_sales$Satisfacción <- ifelse(supermarket_sales$Rating >= 8 & supermarket_sales$Rating <= 10, 1, 0)
+
+```
+
+Inicialmente lo que hacemos es dar una evaluación según el rating registrado de si el cliente ha sido satisfecho o no. Hemos evaluado la satisfacción por la variable Rating diciendo sí está satisfecho cuando el Rating es mayor que cero y no todos los Ratings por debajo de esa cifra.
+Para incorporar más información a este posible modelo predictivo de satisfacción procedo a hacer lo mismo con otras variables, Miembro, Género, Día de compra(entre semana o fin de semana), y si paga o no en efectivo. Creo que pueden enriquecer el modelo predictivo pensado.
+
+```{r,echo=FALSE}
+supermarket_sales$Miembro <- ifelse(supermarket_sales$Customer.type == "Member", 1, 0)
+supermarket_sales$Mujer <- ifelse(supermarket_sales$Gender == "Female", 1, 0)
+supermarket_sales$Hombre <- ifelse(supermarket_sales$Gender == "Male", 1, 0)
+supermarket_sales$EntreSemana <- ifelse(supermarket_sales$Tipo_dia == "Entre semana", 1, 0)
+supermarket_sales$FindeSemana <- ifelse(supermarket_sales$Tipo_dia == "Fin de semana", 1, 0)
+supermarket_sales$Efectivo <- ifelse(supermarket_sales$Payment == "Cash", 1, 0)
+```
+
+```{r,echo=FALSE}
+table(supermarket_sales$Satisfacción)
+total_encuestados <- sum(table(supermarket_sales$Satisfacción))
+porc_satisfechos <- (325 / total_encuestados) * 100
+porc_no_satisfechos <- (666 / total_encuestados) * 100
+```
+A primera vista vemos que hay 1/3 de la muestra que estaría satisfecho por el Rating y el resto no vamos a intentar con estas nuevas variables creadas hacer un pronóstico ya que como vimos anteriormente con la Matriz de correlación Rating no tenía relación apenas con ninguna de las variables cuantitativas.
+```{r Modelo Satisfacción,echo=FALSE}
+
+Variables_binarias <- c("Satisfacción","Miembro", "Mujer", "Hombre", "EntreSemana", "FindeSemana", "Efectivo")
+supermarket_sales <- supermarket_sales %>%
+mutate(across(all_of(Variables_binarias), as.factor))
+
+```
+
+```{r,echo=FALSE}
+ 
+modelo_Satisf <- glm(Satisfacción ~ Miembro + EntreSemana + Efectivo,
+                     data = supermarket_sales,
+                     family = binomial)
+
+```
+He ido probando con diferentes combinaciones (Anexos). 
+No obstante, como temíamos en un primer momento estas variables no me dan información suficiente como para predecir la Satisfacción del cliente es un eje de mejora que trasladaremos a nuestro cliente en el apartado de conclusiones. 
+Uno de los problemas para la predicción es que hemos observado que el número de Insatisfechos VS Satisfechos esta desbalanceado lo que puede perjudicar al test del modelo. Es por ello que podríamos plantear de nuevo añadir más datos a la muestra.
+
+# Discusión de los resultados del modelo
+
+### Modelo Total:
+
+En este caso solo hemos podido trabajar con dos variables que ya definen directamente a la variable, como son Unit Price y Quantity. Las variables categóricas que hemos intentado analizar así como las técnicas de cluster no nos han servido para dar una información adicional a nuestros datos. Tenemos a la fecha muchas limitaciones en este sentido con la base de datos. Este modelo nos muestra la falta de información.
+
+Estos serían unos ejes de mejora propuestos:
+
+Adicionar a la BBDD un número de cliente único, esto nos dará información del comportamiento de los clientes. Podemos empezar identificando a aquellos que ya tenemos como miembros y añadir esa información en nuestra BBDD, esto nos dará un histórico que como sabemos es fundamental para las conclusiones en los análisis de datos. Con esta pequeña modificación avanzaremos mucho en la predicción, no solo de ventas si no incluso podemos predecir demanda de línea de productos, promociones adaptadas al cliente, conocer su comportamiento de compra...
+
+### Modelo Satisfacción:
+
+Toda empresa debe conocer la probabilidad de retorno de sus clientes, un cliente fiel es un bien esencial para la empresa. De igual modo a día de hoy no tenemos identificados como hemos comentado antes a los clientes. Esta información adicional de registros nos aportaría la información necesaria para saber si ese cliente volverá o no.
+
+Además, debemos considerar que la variable que actualmente trabajan como Rating no está aportando información relevante. Por eso no hemos obtenido conclusiones, no se correlaciona con ningunas de las otras variables lo que nos sugiere que no se está recogiendo bien este dato.
+Nuestra propuesta sería agregar varias preguntas de satisfacción después de cada una de las experiencias de compra, algo que ya tenemos registrado con cada número de transacción que registramos. Esto añadido a lo que hemos comentado de la identificación por cliente nos da una herramienta muy poderosa para el análisis que queremos llevar a cabo.
+
+# Informe  final
+
+La Base de Datos proporcionada es una base datos aún por desarrollar por varios motivos los más obvios son; la información de muestra que manejamos es de un solo trimestre y los datos muy generalistas.
+Sin embargo, con los datos que manejamos en este momento después de haberlos tratado para una correcta interpretación; como ya hemos visto en la primera fase nos aportan diferentes resultados muy gráficos que pueden ayudar a la fuerza de ventas de la empresa a la evaluación y toma de decisiones.
+
+Hemos observado que el comportamiento del cliente de la Marca está dividido equitativamente en género, en miembros, la demanda por la línea de producto también es muy similar, y esto nos limita a la hora de sacar conclusiones claras.
+Por el momento hasta el correcto desarrollo de una BBDD para una predicción podemos disponer de esta información para diferentes cuadros de mando relativo a las ventas,
+
+Nuestra propuesta de un cuadro de ventas para la Gestión de equipos de Ventas:
+
+A. Demanda por línea de producto. (Gráfico F.Linea Producto).
+B. Afluencia de clientes según la hora, día dividido al detalle que mejor nos convenga. (Gráfico Evolución de Ventas a lo largo del día).
+C. Demanda según género o miembro. (Gráfico cuenta y Media Total...)
+
+Sin embargo, nuestro objetivo principal consistirá en aportar más valor a esta Base de Datos.
+
+Nuestro Hito se centrará en recoger información por cliente, asociaremos un número único a cada cliente. De manera inicial empezaremos con los Miembros ya que estos ya están identificados de alguna manera. No supondrá además inicialmente ningún coste adicional simplemente es registrar esta información. 
+Añadiremos dos preguntas de Satisfacción muy simples: 1.Volvería a comprar S/N 2. Experiencia de compra Buena, Mala, Regular B/M/R.
+
+Con estos pequeños cambios podremos aportar no solo valor adicional en cuanto al Feedback de los clientes sino que además podremos impulsar nuestras técnicas de ventas.Según los medios e inversión disponibles podemos elaborar promociones basadas en los consumos anteriores, avisos si el cliente lleva tiempo sin pasar por uno de nuestros establecimientos, infinitas posibilidades que a la fecha con la Base de datos que tenemos no estamos recogiendo.
+
+No obstante, hemos podido crear un modelo de predicción; aunque simple por lo comentado antes de la definición de la propia variable que se puede utilizar en este momento para generar objetivos de venta. Podemos dividir estos objetivos por secciones para llegar a una cifra total de negocio. Y que cada unidad de negocio sepa que objetivo de venta tenga que aportar al día, al mes para llegar al presupuesto marcado por la Dirección.
+Integraríamos esto en el sistema para que cada sección le llegará la información en línea de su objetivo de venta.
+
+Por ejemplo;Hacer precio medio de unidad por línea de producto, para predecir cuantas ventas tiene que hacer?
+Nuestra predicción para los datos Unit.price = c(50,60,70) y Quantity = c(5,10,15)
+
+```{r Predicción de Ejemplo, echo=FALSE}
+
+datos_nuevos <- data.frame(
+  Unit.price = c(50,60,70),
+  Quantity = c(5,10,15)
+)
+
+#Predicciones 
+predicciones <- predict(loaded_knn_model, newdata = datos_nuevos)
+
+print(predicciones)
+
+```
+# Biografía
+
+Mi principal documentación ha sido la facilitada en el Máster.
+Los módulos más utilizados han sido
+
+Módulo 4: Introducción al Machine Learning con R
+
+Módulo 5: Estadística
+
+Módulo 6: Paquetes avanzados con R
+
+Módulo 8: Visualización Avanzada
+
+Páginas web:
+
+https://rmarkdown.rstudio.com/
+
+https://bookdown.org/
+
+
+
